@@ -7,6 +7,19 @@
 <title>永劫无间 · 征神之路 魂玉配装工具</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="styles.css">
+<script>
+  /* 首屏渲染前先套用已保存的主题色，避免闪一下默认蓝 */
+  (function () {
+    try {
+      var t = JSON.parse(localStorage.getItem('naraka-souljade-theme') || 'null');
+      if (!t || !t.a) return;
+      var s = document.documentElement.style;
+      s.setProperty('--accent-rgb', t.a);
+      s.setProperty('--accent-rgb-2', t.b || t.a);
+      if (t.t) s.setProperty('--accent-text', t.t);
+    } catch (e) { /* 忽略 */ }
+  })();
+</script>
 </head>
 <body data-tab="pool">
 
@@ -19,6 +32,32 @@
     </div>
   </div>
   <div class="topbar-actions">
+    <div class="menu-wrap" id="themeWrap">
+      <button class="btn btn-theme" id="btnTheme" type="button" title="切换界面主色调">
+        <span class="theme-dot" id="themeDot"></span>主题
+      </button>
+      <div class="theme-panel" id="themePanel">
+        <div class="theme-title">界面主色调</div>
+        <div class="theme-wheel" id="themeWheel" title="点击 / 拖动取色">
+          <span class="theme-cursor" id="themeCursor"></span>
+        </div>
+        <label class="theme-slider">
+          <span>明度</span>
+          <input type="range" id="themeLight" min="52" max="94" step="1" value="79">
+          <b id="themeLightVal">79</b>
+        </label>
+        <div class="theme-swatches" id="themeSwatches"></div>
+        <div class="theme-preview">
+          <span class="tp-accent"></span>
+          <button type="button" class="tp-btn">按钮</button>
+          <span class="tp-tag">标签</span>
+        </div>
+        <div class="theme-actions">
+          <button type="button" class="btn" id="themeReset">恢复默认</button>
+          <button type="button" class="btn btn-primary" id="themeApply">应用</button>
+        </div>
+      </div>
+    </div>
     <div class="menu-wrap">
       <button class="btn" id="btnPreset" type="button">推荐配装 ▾</button>
       <div class="menu" id="presetMenu"></div>

@@ -64,7 +64,7 @@ function normalizeParams() {
   delete p.subCount;
   return p;
 }
-/** 兼容旧存档：把独立的 rare 字段并入 subs，保证 4 格长度、稀有词条最多 1 条 */
+/** 兼容旧存档：把独立的 rare 字段并入 subs，保证 4 格长度 */
 function normalizeSlot(slot) {
   if (!slot || !slot.jadeId || !JADE_BY_ID[slot.jadeId]) return null;
   let subs = Array.isArray(slot.subs) ? slot.subs.slice(0, SLOTS_PER_JADE) : [];
@@ -74,11 +74,7 @@ function normalizeSlot(slot) {
     const free = subs.indexOf(null);
     subs[free >= 0 ? free : SLOTS_PER_JADE - 1] = slot.rare;
   }
-  let seenRare = false;
-  subs = subs.map(id => {
-    if (isRareId(id)) { if (seenRare) return null; seenRare = true; }
-    return id;
-  });
+  // 稀有词条不再限制数量：4 格可以全是稀有词条，也可以三条稀有各来一个
   // 染元素：仅接受合法元素；夺魂等无法染元素的魂玉强制为 null
   const jade = JADE_BY_ID[slot.jadeId];
   let element = ELEMENT_LIST.indexOf(slot.element) >= 0 ? slot.element : null;
@@ -146,7 +142,7 @@ function accumulateJade(S, slot) {
     else S.unimbuedElemDmg += anyElem;      // 未染元素则不生效
   }
 
-  // ② 词条槽位：固定 4 格，普通词条与稀有词条共用，稀有词条最多 1 条
+  // ② 词条槽位：固定 4 格，普通词条与稀有词条共用，稀有词条不限制数量
   const entries  = (slot.subs || []).slice(0, SLOTS_PER_JADE).filter(id => id && id !== 'none');
   const hasHedao = entries.indexOf('hedao') >= 0;
   const mult     = hasHedao ? 1.5 : 1;   // 合道：该魂玉上的普通词条 +50%
@@ -419,14 +415,13 @@ function buildJadeCard(slot, idx) {
   card.style.setProperty('--el', catColor(j));
   const canImbue = !(j.mods && j.mods.cannotImbue);
   const curEl = slot.element && ELEMENTS[slot.element] ? ELEMENTS[slot.element] : null;
-  const boosted = slot.rare === 'hedao';
 
-  /* 4 个词条槽位，每格可选普通词条或稀有词条（整颗玉最多 1 条稀有词条） */
+  /* 4 个词条槽位，每格可选普通词条或稀有词条，稀有词条不限制数量 */
   const subsAll = (slot.subs || []).slice(0, SLOTS_PER_JADE);
   while (subsAll.length < SLOTS_PER_JADE) subsAll.push(null);
   const usedNormals = subsAll.filter(id => id && !isRareId(id));
-  const usedRare    = subsAll.filter(isRareId)[0] || null;
-  const hasHedao    = usedRare === 'hedao';
+  const rarePicked  = subsAll.filter(isRareId);
+  const hasHedao    = subsAll.indexOf('hedao') >= 0;
   const usedCnt     = subsAll.filter(Boolean).length;
 
   let subRows = '';
@@ -438,11 +433,9 @@ function buildJadeCard(slot, idx) {
       return `<option value="${a.id}" ${a.id === cur ? 'selected' : ''} ${dup ? 'disabled' : ''}>${
         a.icon} ${a.name} +${a.value}%</option>`;
     }).join('');
-    const rareOpts = RARES.filter(r => r.id !== 'none').map(r => {
-      const taken = usedRare && usedRare !== r.id;
-      return `<option value="${r.id}" ${r.id === cur ? 'selected' : ''} ${taken ? 'disabled' : ''}>${
-        r.name}　${r.short}</option>`;
-    }).join('');
+    const rareOpts = RARES.filter(r => r.id !== 'none').map(r =>
+      `<option value="${r.id}" ${r.id === cur ? 'selected' : ''}>${r.name}　${r.short}</option>`
+    ).join('');
     const opts = `<option value="">— 空 —</option>
         <optgroup label="普通词条">${normalOpts}</optgroup>
         <optgroup label="稀有词条">${rareOpts}</optgroup>`;
@@ -463,7 +456,15 @@ function buildJadeCard(slot, idx) {
       </div>`;
   }
 
-  const rareDesc = usedRare ? (RARE_BY_ID[usedRare] || {}).desc || '' : '';
+  // 说明文字：列出这颗玉上所有已选稀有词条（去重，多条时标注 ×N）
+  const rareCounts = {};
+  rarePicked.forEach(id => { rareCounts[id] = (rareCounts[id] || 0) + 1; });
+  const rareDesc = Object.keys(rareCounts)
+    .map(id => {
+      const r = RARE_BY_ID[id] || {};
+      return `${r.name}${rareCounts[id] > 1 ? ` ×${rareCounts[id]}` : ''}：${r.desc || ''}`;
+    })
+    .join('　|　');
 
   card.innerHTML = `
     <div class="jc-head">
@@ -585,7 +586,7 @@ function renderStats() {
     ['招式伤害',      S.skillDmg,                                      '%',  S.skillDmg !== 0],
     ['技能冷却缩减',  S.cdr,                                           '%',  S.cdr !== 0],
     ['枚卜·双暴判定', S.meibu,                                         '%',  S.meibu !== 0],
-    ['合道',          S.hedaoCount,                                    '颗', S.hedaoCount !== 0],
+    ['合道',          S.hedaoCount,                                    '条', S.hedaoCount !== 0],
     ['冰爆段数',      S.iceHits,                                       '段', S.iceHits > 1],
     ['霜冻值上限',    S.frostCap,                                      '点', S.frostCap !== 0],
     ['瘴毒引爆层数',  S.poisonLayerNeed,                               '层', S.poisonLayerNeed !== 0],
@@ -634,7 +635,16 @@ function renderStats() {
   /* --- 特殊效果 --- */
   const sp = [];
   S.specials.forEach(s => sp.push(`<li><b>${s.jade}</b> — ${s.text}</li>`));
-  S.rareList.forEach(r => sp.push(`<li><b>${r.jade}</b> — 稀有词条【${r.name}】</li>`));
+  // 稀有词条按「魂玉 + 词条」聚合，多条时标注 ×N
+  const rareAgg = new Map();
+  S.rareList.forEach(r => {
+    const k = r.jade + '\u0000' + r.name;
+    rareAgg.set(k, (rareAgg.get(k) || 0) + 1);
+  });
+  rareAgg.forEach((n, k) => {
+    const [jade, name] = k.split('\u0000');
+    sp.push(`<li><b>${jade}</b> — 稀有词条【${name}】${n > 1 ? ` ×${n}` : ''}</li>`);
+  });
   if (S.cannotImbue) sp.push(`<li><b>通用·夺魂</b> — 该魂玉无法激活熏印元素效果</li>`);
   $('#specialBlock').style.display = sp.length ? '' : 'none';
   $('#specialList').innerHTML = sp.length ? sp.join('')
@@ -707,11 +717,180 @@ function renderFormula() {
       <li><b>染元素</b>：魂玉本身不带元素，佩戴后可在卡片上单独染雷 / 冰 / 毒（默认未染）。
           【元素奔涌】等「随元素改变」的加成会加到<b>该魂玉所染元素</b>对应的伤害上；未染元素则不计入。</li>
       <li><b>词条位规则</b>：每颗魂玉固定 <b>4 个词条槽位</b>，
-          每一格都可以选<b>普通词条</b>或<b>稀有词条</b>（稀有词条整颗魂玉最多 1 条）。</li>
+          每一格都可以选<b>普通词条</b>或<b>稀有词条</b>，稀有词条不限制数量
+          （可以 4 格全合道，也可以三种稀有各来一条）。</li>
       <li>魂玉本体的固定数值（如冰渊爆 +60% 冰爆伤害）直接累加，不占用词条位。</li>
       <li>普通词条为满数值；若该魂玉的 4 格中带有【合道】，其普通词条 ×1.5。</li>
       <li>无明确数值的机制（如流星、毒沼）不计入期望，仅在“已激活特殊效果”中提示。</li>
     </ul>`;
+}
+
+/* ======================================================================
+ *  主题色（取色圆环）
+ * ====================================================================== */
+const THEME_KEY = 'naraka-souljade-theme';
+const DEFAULT_THEME = { h: 209, s: 100, l: 79 };          // ≈ #8fcbff 淡蓝
+const THEME_PRESETS = [
+  { name: '淡蓝',   h: 209, s: 100, l: 79 },
+  { name: '青碧',   h: 174, s:  80, l: 64 },
+  { name: '翠绿',   h: 142, s:  62, l: 64 },
+  { name: '橙金',   h:  36, s:  92, l: 68 },
+  { name: '绯红',   h: 356, s:  82, l: 70 },
+  { name: '品红',   h: 318, s:  76, l: 72 },
+  { name: '紫罗兰', h: 268, s:  78, l: 76 },
+  { name: '石墨灰', h: 212, s:  16, l: 76 },
+];
+let currentTheme = Object.assign({}, DEFAULT_THEME);
+
+/** HSL -> [r,g,b] */
+function hsl2rgb(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  s = clamp(s, 0, 100) / 100;
+  l = clamp(l, 0, 100) / 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if      (h <  60) { r = c; g = x; }
+  else if (h < 120) { r = x; g = c; }
+  else if (h < 180) { g = c; b = x; }
+  else if (h < 240) { g = x; b = c; }
+  else if (h < 300) { r = x; b = c; }
+  else              { r = c; b = x; }
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+}
+
+/** 由主色调推导出整套 CSS 变量 */
+function themeVars(t) {
+  const a = hsl2rgb(t.h, t.s, t.l);
+  const b = hsl2rgb(t.h, Math.min(100, t.s + 8), Math.max(32, t.l - 30));  // 背景渐变的深色端
+  const x = hsl2rgb(t.h, Math.min(55, t.s * 0.5), 95);                     // 主色上的高亮文字
+  return {
+    a: `${a[0]},${a[1]},${a[2]}`,
+    b: `${b[0]},${b[1]},${b[2]}`,
+    t: `rgb(${x[0]},${x[1]},${x[2]})`,
+  };
+}
+
+function applyTheme(t, persist) {
+  const th = t || DEFAULT_THEME;
+  const v = themeVars(th);
+  const st = document.documentElement.style;
+  st.setProperty('--accent-rgb', v.a);
+  st.setProperty('--accent-rgb-2', v.b);
+  st.setProperty('--accent-text', v.t);
+  const dot = $('#themeDot');
+  if (dot) dot.style.background = `rgb(${v.a})`;
+  currentTheme = { h: th.h, s: th.s, l: th.l };
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_KEY, JSON.stringify({
+        h: th.h, s: th.s, l: th.l, a: v.a, b: v.b, t: v.t,
+      }));
+    } catch (e) { /* 忽略隐私模式 */ }
+  }
+}
+
+function loadTheme() {
+  try {
+    const d = JSON.parse(localStorage.getItem(THEME_KEY) || 'null');
+    if (d && typeof d.h === 'number' && typeof d.s === 'number' && typeof d.l === 'number') return d;
+  } catch (e) { /* 忽略 */ }
+  return null;
+}
+
+function initTheme() {
+  const saved = loadTheme();
+  currentTheme = saved ? { h: saved.h, s: saved.s, l: saved.l } : Object.assign({}, DEFAULT_THEME);
+  applyTheme(currentTheme, false);
+
+  const panel  = $('#themePanel');
+  const wheel  = $('#themeWheel');
+  const cursor = $('#themeCursor');
+  const light  = $('#themeLight');
+  const lightV = $('#themeLightVal');
+
+  light.value = currentTheme.l;
+  lightV.textContent = currentTheme.l;
+
+  // 预设色块
+  $('#themeSwatches').innerHTML = THEME_PRESETS.map((p, i) => {
+    const c = hsl2rgb(p.h, p.s, p.l);
+    return `<button type="button" class="theme-sw" data-i="${i}" title="${p.name}"
+              style="background:rgb(${c[0]},${c[1]},${c[2]})"></button>`;
+  }).join('');
+  $$('.theme-sw').forEach(b => b.addEventListener('click', () => {
+    const p = THEME_PRESETS[+b.dataset.i];
+    currentTheme = { h: p.h, s: p.s, l: p.l };
+    light.value = p.l; lightV.textContent = p.l;
+    applyTheme(currentTheme, false);
+    moveCursor();
+  }));
+
+  function moveCursor() {
+    const R = wheel.clientWidth / 2;
+    if (!R) return;
+    const ang = currentTheme.h * Math.PI / 180;
+    const rad = (currentTheme.s / 100) * R;
+    cursor.style.transform = `translate(${Math.cos(ang) * rad}px, ${Math.sin(ang) * rad}px)`;
+  }
+  function pick(e) {
+    const r = wheel.getBoundingClientRect();
+    const R = r.width / 2;
+    if (!R) return;
+    const dx = e.clientX - (r.left + R);
+    const dy = e.clientY - (r.top + R);
+    const dist = Math.min(Math.hypot(dx, dy), R);
+    currentTheme = {
+      h: Math.round((Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360),
+      s: Math.round(dist / R * 100),
+      l: +light.value,
+    };
+    applyTheme(currentTheme, false);
+    moveCursor();
+  }
+  let drag = false;
+  wheel.addEventListener('pointerdown', e => {
+    drag = true;
+    if (wheel.setPointerCapture) wheel.setPointerCapture(e.pointerId);
+    pick(e);
+  });
+  wheel.addEventListener('pointermove', e => { if (drag) pick(e); });
+  ['pointerup', 'pointercancel'].forEach(ev =>
+    wheel.addEventListener(ev, () => { drag = false; }));
+
+  light.addEventListener('input', () => {
+    lightV.textContent = light.value;
+    currentTheme.l = +light.value;
+    applyTheme(currentTheme, false);
+  });
+
+  $('#themeApply').addEventListener('click', () => {
+    applyTheme(currentTheme, true);
+    panel.classList.remove('open');
+    toast('已应用主题');
+  });
+  $('#themeReset').addEventListener('click', () => {
+    currentTheme = Object.assign({}, DEFAULT_THEME);
+    light.value = currentTheme.l; lightV.textContent = currentTheme.l;
+    applyTheme(currentTheme, true);
+    moveCursor();
+    toast('已恢复默认配色');
+  });
+
+  $('#btnTheme').addEventListener('click', e => {
+    e.stopPropagation();
+    const open = panel.classList.toggle('open');
+    if (open) {
+      $('#presetMenu').classList.remove('open');
+      moveCursor();
+    }
+  });
+  panel.addEventListener('click', e => e.stopPropagation());
+  document.addEventListener('click', () => panel.classList.remove('open'));
+  window.addEventListener('resize', moveCursor);
+
+  moveCursor();
 }
 
 /* ---------- 总渲染 ---------- */
@@ -944,6 +1123,7 @@ function bind() {
         <b>${p.name}</b><span>${p.desc}</span></button>`).join('');
   $('#btnPreset').addEventListener('click', e => {
     e.stopPropagation();
+    $('#themePanel').classList.remove('open');
     menu.classList.toggle('open');
   });
   document.addEventListener('click', () => menu.classList.remove('open'));
@@ -1000,6 +1180,7 @@ function init() {
   renderChips();
   renderFormula();
   renderParams();
+  initTheme();
 
   const had = load();
   normalizeParams();
@@ -1030,6 +1211,7 @@ if (typeof window !== 'undefined') {
   window.NarakaSoulJade = {
     state, totals, damage, baselineDPS, applyPreset, renderAll, normalizeSlot,
     SLOTS_PER_JADE, isRareId, ELEMENTS, ELEMENT_LIST,
+    hsl2rgb, themeVars, applyTheme,
     get JADES()   { return JADES; },
     get AFFIXES() { return AFFIXES; },
     get RARES()   { return RARES; },
