@@ -170,9 +170,9 @@ function accumulateJade(S, slot) {
   }
 
   // ② 词条槽位：固定 4 格，普通词条与稀有词条共用，稀有词条不限制数量
-  const entries  = (slot.subs || []).slice(0, SLOTS_PER_JADE).filter(id => id && id !== 'none');
-  const hasHedao = entries.indexOf('hedao') >= 0;
-  const mult     = hasHedao ? 1.5 : 1;   // 合道：该魂玉上的普通词条 +50%
+  const entries    = (slot.subs || []).slice(0, SLOTS_PER_JADE).filter(id => id && id !== 'none');
+  const hedaoCount = entries.filter(id => id === 'hedao').length;
+  const mult       = 1 + 0.5 * hedaoCount;   // 合道可叠加：每一条合道都让该魂玉的普通词条 +50%
 
   entries.forEach(id => {
     if (isRareId(id)) {
@@ -457,7 +457,9 @@ function buildJadeCard(slot, idx) {
   while (subsAll.length < SLOTS_PER_JADE) subsAll.push(null);
   const usedNormals = subsAll.filter(id => id && !isRareId(id));
   const rarePicked  = subsAll.filter(isRareId);
-  const hasHedao    = subsAll.indexOf('hedao') >= 0;
+  const hedaoCount  = subsAll.filter(id => id === 'hedao').length;
+  const hedaoMul    = 1 + 0.5 * hedaoCount;    // 合道可叠加：每条 +50%
+  const hasHedao    = hedaoCount > 0;
   const usedCnt     = subsAll.filter(Boolean).length;
 
   let subRows = '';
@@ -483,8 +485,8 @@ function buildJadeCard(slot, idx) {
       valHtml = `<span class="sub-val rare rare-${cur}">${RARE_BY_ID[cur].short}</span>`;
     } else {
       valHtml = `<span class="sub-val ${hasHedao ? 'boosted' : ''}">${
-        pct(AFFIX_BY_ID[cur].value * (hasHedao ? 1.5 : 1))}${
-        hasHedao ? ' <small>合道</small>' : ''}</span>`;
+        pct(AFFIX_BY_ID[cur].value * hedaoMul)}${
+        hasHedao ? ` <small>合道${hedaoCount > 1 ? ` ×${hedaoCount}` : ''}</small>` : ''}</span>`;
     }
     subRows += `<div class="sub-row${cur && isRareId(cur) ? ' has-rare' : ''}">
         <select class="sub-select" data-slot="${idx}" data-sub="${si}">${opts}</select>
@@ -544,7 +546,7 @@ function buildJadeCard(slot, idx) {
       <div class="sub-title">
         <span>词条槽位</span>
         <span class="sub-count ${usedCnt >= SLOTS_PER_JADE ? 'full' : ''}">${usedCnt} / ${SLOTS_PER_JADE}</span>
-        ${hasHedao ? '<span class="tag rarity-极">合道 ×1.5</span>' : ''}
+        ${hasHedao ? `<span class="tag rarity-极">合道 ×${hedaoCount} → 副属性 ×${round1(hedaoMul)}</span>` : ''}
       </div>
       ${subRows}
       ${rareDesc ? `<div class="rare-desc">${rareDesc}</div>` : ''}
@@ -588,7 +590,7 @@ const STAT_HINTS = {
   '招式伤害': '影响普攻与技能，烈元诀会使其降低',
   '技能冷却缩减': '【化气】提供，按 1/(1−CDR) 提升技能频率',
   '枚卜·双暴判定': '触发两次暴击判定并取更优结果的概率',
-  '合道': '使所在魂玉的副属性额外增加 50%',
+  '合道': '使所在魂玉的普通词条额外增加 50%；多条可叠加（N 条 = ×(1 + 0.5N)）',
   '冰爆段数': '【连续冰爆】使一次冰爆连续触发多段，但单段伤害降低',
   '霜冻值上限': '【爆冰诀】会降低自身霜冻值上限',
   '瘴毒引爆层数': '【淬毒术】降低引爆所需的瘴毒层数',
@@ -790,7 +792,7 @@ function renderFormula() {
           每一格都可以选<b>普通词条</b>或<b>稀有词条</b>，稀有词条不限制数量
           （可以 4 格全合道，也可以三种稀有各来一条）。</li>
       <li>魂玉本体的固定数值（如冰渊爆 +60% 冰爆伤害）直接累加，不占用词条位。</li>
-      <li>普通词条为满数值；若该魂玉的 4 格中带有【合道】，其普通词条 ×1.5。</li>
+      <li>普通词条为满数值；【合道】<b>可叠加</b>——该魂玉上有 N 条合道，其普通词条就 ×(1 + 0.5N)。</li>
       <li>无明确数值的机制（如流星、毒沼）不计入期望，仅在“已激活特殊效果”中提示。</li>
     </ul>`;
 }

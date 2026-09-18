@@ -33,8 +33,8 @@ const AFFIX_BY_ID = Object.fromEntries(AFFIXES.map(a => [a.id, a]));
 
 /* ---------- 稀有词条（满数值） ---------- */
 const RARES = [
-  { id: 'hedao', name: '合道', value: 50, short: '副属性 ×1.5',
-    desc: '此魂玉上的副属性额外增加 50%（即该魂玉的普通词条数值 ×1.5）' },
+  { id: 'hedao', name: '合道', value: 50, short: '副属性 +50%',
+    desc: '此魂玉上的副属性额外增加 50%；多条合道可叠加（2 条 → 副属性 ×2）' },
   { id: 'huaqi', name: '化气', value: 25, short: '冷却缩减 25%',
     desc: '触发元素后减少技能冷却 25%' },
   { id: 'meibu', name: '枚卜', value: 20, short: '双暴判定 +20%',
