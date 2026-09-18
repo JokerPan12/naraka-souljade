@@ -358,12 +358,14 @@ function equip(jadeId) {
   }
   state.slots[idx] = emptySlot();
   state.slots[idx].jadeId = jadeId;
+  save(true);
   renderAll();
 }
 
 function unequip(idx) {
   if (!state.slots[idx]) return;
   state.slots[idx] = null;
+  save(true);
   renderAll();
 }
 
@@ -399,6 +401,7 @@ function renderBuild() {
       if (state.slots.some(s => s && s.jadeId === id)) { toast('该魂玉已在配装中'); return; }
       state.slots[idx] = emptySlot();
       state.slots[idx].jadeId = id;
+      save(true);
       renderAll();
     });
   });
@@ -880,17 +883,170 @@ function initTheme() {
 
   $('#btnTheme').addEventListener('click', e => {
     e.stopPropagation();
+    if (!panel.classList.contains('open')) placePanel(panel, e.currentTarget);
     const open = panel.classList.toggle('open');
     if (open) {
       $('#presetMenu').classList.remove('open');
+      $('#buildMenu').classList.remove('open');
       moveCursor();
     }
   });
   panel.addEventListener('click', e => e.stopPropagation());
   document.addEventListener('click', () => panel.classList.remove('open'));
-  window.addEventListener('resize', moveCursor);
+  window.addEventListener('resize', () => {
+    moveCursor();
+    if (panel.classList.contains('open')) placePanel(panel, $('#btnTheme'));
+  });
 
   moveCursor();
+}
+
+/* ======================================================================
+ *  我的配装（命名存档）
+ * ====================================================================== */
+const BUILDS_KEY = 'naraka-souljade-builds';
+
+const escapeHtml = s => String(s).replace(/[&<>"']/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function loadBuilds() {
+  try {
+    const d = JSON.parse(localStorage.getItem(BUILDS_KEY) || '[]');
+    return Array.isArray(d) ? d : [];
+  } catch (e) { return []; }
+}
+function persistBuilds(list) {
+  try { localStorage.setItem(BUILDS_KEY, JSON.stringify(list)); } catch (e) { /* 忽略 */ }
+}
+/** 当前配装的快照 */
+function snapshot() {
+  return {
+    params: JSON.parse(JSON.stringify(state.params)),
+    slots: state.slots.map(s => s && s.jadeId
+      ? { jadeId: s.jadeId, subs: (s.subs || []).slice(), element: s.element || null }
+      : null),
+  };
+}
+/* 单靠 Date.now() 在同一毫秒内连续保存会撞号，附加自增序号 + 随机串 */
+let buildSeq = 0;
+const newBuildId = () =>
+  `b${Date.now().toString(36)}-${(++buildSeq).toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+/** 同名则覆盖，返回 'added' | 'updated' */
+function saveBuild(name) {
+  const list = loadBuilds();
+  const snap = snapshot();
+  const i = list.findIndex(b => b.name === name);
+  const rec = Object.assign({ id: newBuildId(), name, ts: Date.now() }, snap);
+  if (i >= 0) { rec.id = list[i].id; list[i] = rec; } else { list.unshift(rec); }
+  persistBuilds(list);
+  renderBuilds();
+  return i >= 0 ? 'updated' : 'added';
+}
+function deleteBuild(id) {
+  persistBuilds(loadBuilds().filter(b => b.id !== id));
+  renderBuilds();
+}
+function applyBuild(id) {
+  const b = loadBuilds().find(x => x.id === id);
+  if (!b) return;
+  state.params = Object.assign({}, DEFAULT_PARAMS, b.params || {});
+  normalizeParams();
+  state.slots = (b.slots || []).map(normalizeSlot);
+  resizeSlots(state.params.slotCount);
+  syncControls(); renderParams(); save(true); renderAll();
+  toast(`已载入【${b.name}】`);
+}
+
+function renderBuilds() {
+  const box = $('#buildMenu');
+  if (!box) return;
+  const list = loadBuilds();
+  const badge = $('#buildCount');
+  if (badge) badge.textContent = list.length;
+
+  if (!list.length) {
+    box.innerHTML = `<div class="menu-empty">还没有保存的配装<span><br>配好后点上面的「保存」起个名字</span></div>`;
+    return;
+  }
+  box.innerHTML = list.map(b => {
+    const n = (b.slots || []).filter(s => s && s.jadeId).length;
+    const d = new Date(b.ts || Date.now());
+    const p2 = v => String(v).padStart(2, '0');
+    const time = `${d.getMonth() + 1}/${d.getDate()} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+    return `<div class="build-item">
+        <button type="button" class="build-load" data-load="${b.id}" title="载入这套配装">
+          <b>${escapeHtml(b.name)}</b><span>${n} 颗魂玉 · ${time}</span>
+        </button>
+        <button type="button" class="build-del" data-del="${b.id}" title="删除">✕</button>
+      </div>`;
+  }).join('');
+
+  $$('[data-load]', box).forEach(el => el.addEventListener('click', e => {
+    e.stopPropagation();
+    applyBuild(el.dataset.load);
+  }));
+  $$('[data-del]', box).forEach(el => el.addEventListener('click', e => {
+    e.stopPropagation();
+    const b = list.find(x => x.id === el.dataset.del);
+    if (!confirm(`确定删除配装「${b ? b.name : ''}」吗？`)) return;
+    deleteBuild(el.dataset.del);
+    toast('已删除');
+  }));
+}
+
+/** 保存弹窗：输入自定义名称 */
+function openSaveBuild() {
+  const n = state.slots.filter(s => s && s.jadeId).length;
+  if (!n) { toast('先佩戴魂玉再保存吧'); return; }
+  const list = loadBuilds();
+  const dft = `配装 ${list.length + 1}`;
+
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>保存配装</h3>
+      <p style="margin:0;font-size:12px;color:var(--text-3);line-height:1.7">
+        给这套配装起个名字（${n} 颗魂玉），之后可在「我的配装」里随时载入。<br>
+        重名会覆盖原来的那套。
+      </p>
+      <input class="name-input" id="buildNameInput" maxlength="24" placeholder="例如：百化冰陨流 · 毕业">
+      <div class="modal-actions">
+        <button type="button" class="btn" data-close>取消</button>
+        <button type="button" class="btn btn-primary" data-ok>保存</button>
+      </div>
+    </div>`;
+
+  const input = $('#buildNameInput', mask);
+  const doSave = () => {
+    const name = (input.value || '').trim() || dft;
+    const r = saveBuild(name);
+    mask.remove();
+    toast(r === 'updated' ? `已更新【${name}】` : `已保存【${name}】`);
+  };
+  mask.addEventListener('click', e => {
+    if (e.target === mask || e.target.hasAttribute('data-close')) mask.remove();
+  });
+  $('[data-ok]', mask).addEventListener('click', doSave);
+  input.value = dft;
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); doSave(); }
+    if (e.key === 'Escape') mask.remove();
+  });
+  document.body.appendChild(mask);
+  input.focus();
+  input.select();
+}
+
+/* ---------- 下拉面板定位 ---------- */
+/* 窄屏时下拉是 position:fixed，需要按触发按钮的位置算出 top，
+   否则贴边的按钮（第一列 / 最后一列）会把面板顶出屏幕 */
+function placePanel(panel, btn) {
+  if (!panel) return;
+  if (window.innerWidth > 860) { panel.style.top = ''; return; }
+  const r = btn.getBoundingClientRect();
+  panel.style.top = Math.round(r.bottom + 8) + 'px';
 }
 
 /* ---------- 总渲染 ---------- */
@@ -1107,7 +1263,7 @@ function bind() {
     e.target.value = 'keep';
   });
 
-  $('#btnSave').addEventListener('click', () => save());
+  $('#btnSave').addEventListener('click', openSaveBuild);
   $('#btnExport').addEventListener('click', exportJSON);
   $('#btnImport').addEventListener('click', importJSON);
   $('#btnClear').addEventListener('click', () => {
@@ -1124,9 +1280,31 @@ function bind() {
   $('#btnPreset').addEventListener('click', e => {
     e.stopPropagation();
     $('#themePanel').classList.remove('open');
+    $('#buildMenu').classList.remove('open');
+    if (!menu.classList.contains('open')) placePanel(menu, e.currentTarget);
     menu.classList.toggle('open');
   });
-  document.addEventListener('click', () => menu.classList.remove('open'));
+  document.addEventListener('click', () => {
+    menu.classList.remove('open');
+    $('#buildMenu').classList.remove('open');
+  });
+
+  // 我的配装
+  $('#btnBuilds').addEventListener('click', e => {
+    e.stopPropagation();
+    $('#presetMenu').classList.remove('open');
+    $('#themePanel').classList.remove('open');
+    renderBuilds();
+    const box = $('#buildMenu');
+    if (!box.classList.contains('open')) placePanel(box, e.currentTarget);
+    box.classList.toggle('open');
+  });
+  // 视口变化时重新贴合已打开的下拉
+  window.addEventListener('resize', () => {
+    if (menu.classList.contains('open')) placePanel(menu, $('#btnPreset'));
+    const bm = $('#buildMenu');
+    if (bm.classList.contains('open')) placePanel(bm, $('#btnBuilds'));
+  });
   $$('[data-preset]', menu).forEach(b => b.addEventListener('click', () => {
     applyPreset(b.dataset.preset);
     menu.classList.remove('open');
@@ -1191,6 +1369,7 @@ function init() {
   syncControls();
   bind();
   syncTabs();
+  renderBuilds();
 
   const fromHash = applyHash();
   renderAll();
@@ -1212,6 +1391,7 @@ if (typeof window !== 'undefined') {
     state, totals, damage, baselineDPS, applyPreset, renderAll, normalizeSlot,
     SLOTS_PER_JADE, isRareId, ELEMENTS, ELEMENT_LIST,
     hsl2rgb, themeVars, applyTheme,
+    loadBuilds, saveBuild, deleteBuild, applyBuild, renderBuilds, snapshot, openSaveBuild,
     get JADES()   { return JADES; },
     get AFFIXES() { return AFFIXES; },
     get RARES()   { return RARES; },
