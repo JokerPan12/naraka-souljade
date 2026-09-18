@@ -1,0 +1,11 @@
+# 操作系统 / 编辑器
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# 临时文件
+_*.png
+_dbg*.html
