@@ -569,6 +569,23 @@ button,select,input{ font-family:inherit; font-size:inherit; color:inherit; }
 .special-list .empty{ color:var(--text-3); }
 .special-list .empty::before{ content:''; }
 
+/* 条件加成开关 */
+.cond-list{ display:grid; gap:6px; }
+.cond-item{
+  display:grid; grid-template-columns: auto minmax(0,auto) minmax(0,1fr) auto;
+  gap:8px; align-items:center; cursor:pointer;
+  padding:7px 10px; border-radius:9px;
+  background:rgba(var(--accent-rgb),.04); border:1px solid transparent;
+  transition:.15s;
+}
+.cond-item:hover{ background:rgba(var(--accent-rgb),.09); }
+.cond-item.on{ background:linear-gradient(180deg, rgba(var(--accent-rgb),.15), rgba(var(--accent-rgb),.05)); border-color:var(--line); }
+.cond-item input{ accent-color:rgb(var(--accent-rgb)); cursor:pointer; margin:0; }
+.cond-jade{ font-size:11.5px; color:var(--accent); font-weight:600; white-space:nowrap; }
+.cond-label{ font-size:11.5px; color:var(--text-2); min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.cond-val{ font-size:11.5px; font-variant-numeric:tabular-nums; color:var(--ok); white-space:nowrap; }
+.cond-item:not(.on) .cond-val{ color:var(--text-3); text-decoration:line-through; }
+
 .param-grid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap:8px; }
 .param-cell{ display:grid; gap:3px; }
 .param-cell label{ font-size:11px; color:var(--text-3); }

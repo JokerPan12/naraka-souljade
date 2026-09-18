@@ -38,6 +38,8 @@ const DEFAULT_PARAMS = {
   meteorMul: 80,      // 流星倍率(%)
   meteorCd: 4,        // 流星冷却(秒)
   slotCount: 7,       // 配装槽位默认 7 个
+  unusedPoints: 0,    // 未使用的潜能点（守缺化劲）
+  conds: {},          // 条件加成开关 { '魂玉id:序号': true|false }
 };
 /* 游戏规则：每颗魂玉固定 4 个词条槽位，普通词条与稀有词条共用这 4 格 */
 const SLOTS_PER_JADE = 4;
@@ -62,6 +64,8 @@ function normalizeParams() {
   const p = state.params;
   p.slotCount = clamp(parseInt(p.slotCount, 10) || 7, 1, 12);
   delete p.subCount;
+  p.unusedPoints = clamp(parseInt(p.unusedPoints, 10) || 0, 0, 300);
+  if (!p.conds || typeof p.conds !== 'object' || Array.isArray(p.conds)) p.conds = {};
   return p;
 }
 /** 兼容旧存档：把独立的 rare 字段并入 subs，保证 4 格长度 */
@@ -102,6 +106,7 @@ const ADDITIVE = new Set([
   'bossDmg', 'rangedDmg', 'divineEff', 'skillDmg',
   'cdr', 'meibu', 'frostCap', 'poisonLayerNeed',
   'iceDmgMul', 'iceCdr', 'rangedSelfMul',
+  'dmgPct', 'elemDmgPct',
 ]);
 
 function applyMods(S, mods) {
@@ -142,6 +147,28 @@ function accumulateJade(S, slot) {
     else S.unimbuedElemDmg += anyElem;      // 未染元素则不生效
   }
 
+  // ①c 武器限定效果：只在所选武器匹配时生效（火炮 / 弓箭 …）
+  if (jade.weaponMods) {
+    const wm = jade.weaponMods[state.params.weapon];
+    if (wm) applyMods(S, wm);
+  }
+
+  // ①d 按「未使用潜能点」缩放的加成（守缺化劲）
+  if (jade.perPoint) {
+    const n = clamp(parseInt(state.params.unusedPoints, 10) || 0, 0, 300);
+    if (n > 0) Object.keys(jade.perPoint).forEach(k => { S[k] = (S[k] || 0) + jade.perPoint[k] * n; });
+  }
+
+  // ①e 条件加成：默认视为条件已满足（参与计算），可在「条件加成」面板里逐个取消
+  if (jade.cond && jade.cond.length) {
+    jade.cond.forEach((c, i) => {
+      const key = jade.id + ':' + i;
+      const on = state.params.conds[key] !== false;
+      S.condList.push({ key, jade: jade.name, label: c.label, on, mods: c.mods });
+      if (on) applyMods(S, c.mods);
+    });
+  }
+
   // ② 词条槽位：固定 4 格，普通词条与稀有词条共用，稀有词条不限制数量
   const entries  = (slot.subs || []).slice(0, SLOTS_PER_JADE).filter(id => id && id !== 'none');
   const hasHedao = entries.indexOf('hedao') >= 0;
@@ -172,12 +199,13 @@ function totals() {
     iceDmg: 0, thunderDmg: 0, poisonDmg: 0, elemAccum: 0,
     bossDmg: 0, rangedDmg: 0, divineEff: 0, skillDmg: 0,
     cdr: 0, meibu: 0, hedaoCount: 0, frostCap: 0, poisonLayerNeed: 0,
+    dmgPct: 0, elemDmgPct: 0,
     iceHits: 1, iceDmgMul: 0, iceCdr: 0,
     rangedHits: 1, rangedSelfMul: 0,
     cannotImbue: 0, meteor: 0, unimbuedElemDmg: 0,
     imbue: { thunder: 0, ice: 0, poison: 0, none: 0 },
     jadeCount: 0, score: 0, subCount: 0,
-    equippedIds: [], rareList: [], specials: [],
+    equippedIds: [], rareList: [], specials: [], condList: [],
   };
   state.slots.forEach(slot => { if (slot && slot.jadeId) accumulateJade(S, slot); });
   return S;
@@ -186,9 +214,11 @@ function totals() {
 /** 核心伤害模型 */
 function damage(S, p) {
   const bossMul   = p.bossDmgOn   ? 1 + S.bossDmg / 100 : 1;
-  const isCannon  = p.weapon === 'cannon';
-  const rangedMul = (isCannon && p.rangedDmgOn) ? 1 + S.rangedDmg / 100 : 1;
-  const cannonMul = isCannon ? S.rangedHits * (1 + S.rangedSelfMul / 100) : 1;
+  const isRanged  = p.weapon === 'cannon' || p.weapon === 'bow';   // 火炮 / 弓箭
+  const rangedMul = (isRanged && p.rangedDmgOn) ? 1 + S.rangedDmg / 100 : 1;
+  const multiMul  = isRanged ? S.rangedHits * (1 + S.rangedSelfMul / 100) : 1;
+  const globalMul = 1 + (S.dmgPct || 0) / 100;        // 全局增伤（魂燃一线等）
+  const elemAdj   = 1 + (S.elemDmgPct || 0) / 100;    // 元素伤害调整（舍元劲等）
   const atk       = p.baseAtk * (1 + S.atkPct / 100);
 
   const totalCritRate = p.baseCritRate + S.critRate;
@@ -210,7 +240,7 @@ function damage(S, p) {
   const skillPctMul = 1 + S.skillDmg / 100;   // 招式伤害（烈元诀为负）
 
   /* ---- 普通攻击 ---- */
-  const naBase   = atk * p.naMul / 100 * bossMul * rangedMul * cannonMul * skillPctMul;
+  const naBase   = atk * p.naMul / 100 * bossMul * rangedMul * multiMul * skillPctMul * globalMul;
   const naNoCrit = naBase;
   const naCrit   = naBase * critMul;
   const naExpect = naBase * (1 + effCrit * (critMul - 1));
@@ -224,7 +254,7 @@ function damage(S, p) {
   const iceMul   = isIce ? iceHits * (1 + S.iceDmgMul / 100) : 1;
   const iceFreq  = isIce ? 1 + S.iceCdr / 100 : 1;
 
-  const elemBase   = atk * p.elemMul / 100 * (1 + elBonus / 100) * iceMul * bossMul;
+  const elemBase   = atk * p.elemMul / 100 * (1 + elBonus / 100) * iceMul * bossMul * elemAdj * globalMul;
   const elemNoCrit = elemBase;
   const elemCrit   = elemBase * critMul;
   const elemExpect = elemBase * (1 + effElemCrit * (critMul - 1));
@@ -234,7 +264,7 @@ function damage(S, p) {
 
   /* ---- 技能伤害 ---- */
   const cdr        = clamp(S.cdr, 0, 80) / 100;
-  const skillBase  = atk * p.skillMul / 100 * bossMul * skillPctMul;
+  const skillBase  = atk * p.skillMul / 100 * bossMul * skillPctMul * globalMul;
   const skillCrit  = eff(cRate);
   const skillExpect= skillBase * (1 + skillCrit * (critMul - 1));
   const skillDPS   = skillExpect * p.skillFreq / (1 - cdr);
@@ -249,7 +279,7 @@ function damage(S, p) {
 
   return {
     atk, totalCritRate, totalCritDmg, critMul, effCrit, effElemCrit,
-    cRate, eRate, bossMul, rangedMul, cannonMul, accumMul, iceMul, iceFreq,
+    cRate, eRate, bossMul, rangedMul, multiMul, globalMul, elemAdj, accumMul, iceMul, iceFreq,
     naNoCrit, naCrit, naExpect, naDPS,
     elemBase, elemNoCrit, elemCrit, elemExpect, elemDPS,
     skillBase, skillExpect, skillDPS, procDPS, totalDPS,
@@ -303,6 +333,9 @@ function matchQuery(j) {
 
 /** 魂玉池左侧色条：仅区分魂玉类型，与元素无关 */
 const catColor = j => (j.category === '招式专精魂玉' ? '#b79cff' : '#7cc2f5');
+
+/** 武器类型名（weaponMods / forWeapon 用） */
+const WEAPON_NAMES = { melee: '近战通用', cannon: '火炮', bow: '弓箭', zhanmadao: '斩马刀' };
 
 function renderPool() {
   const list = $('#poolList');
@@ -489,6 +522,7 @@ function buildJadeCard(slot, idx) {
     </div>
     <div class="jc-brief">${j.brief}</div>
     <div class="jc-effect">
+      ${j.forWeapon ? `<span class="eff spec">仅对【${WEAPON_NAMES[j.forWeapon] || j.forWeapon}】生效</span>` : ''}
       ${(j.bullets || []).map(b => {
         const neg = /降低|负面|上限降低|减少技能/.test(b) && !/层数减|冷却时间降低/.test(b);
         return `<span class="eff ${neg ? 'neg' : ''}">${b}</span>`;
@@ -532,6 +566,15 @@ function buildJadeCard(slot, idx) {
 }
 
 /* ---------- 属性面板 ---------- */
+const MOD_LABELS = {
+  atkPct: '攻击力', critRate: '暴击率', critDmg: '暴击伤害', elemCritRate: '元素暴击率',
+  iceDmg: '冰爆伤害', thunderDmg: '天雷伤害', poisonDmg: '毒爆伤害', elemAccum: '元素积累效率',
+  bossDmg: '对首领伤害', rangedDmg: '远程招式增伤', divineEff: '神射值效率', skillDmg: '招式伤害',
+  cdr: '技能冷却缩减', meibu: '枚卜', dmgPct: '全局增伤', elemDmgPct: '元素伤害',
+};
+const modsText = mods =>
+  Object.keys(mods || {}).map(k => `${MOD_LABELS[k] || k} ${pct(mods[k])}`).join('、');
+
 const STAT_HINTS = {
   '攻击力加成': '所有【攻击】词条与魂玉固定攻击加成的总和',
   '有效暴击率': '经过【枚卜】双暴判定修正后的等效暴击率',
@@ -582,6 +625,8 @@ function renderStats() {
     ['天雷伤害加成' + (act === 'thunder' ? '（输出）' : ''), S.thunderDmg, '%', S.thunderDmg !== 0],
     ['毒爆伤害加成' + (act === 'poison' ? '（输出）' : ''),  S.poisonDmg,  '%', S.poisonDmg !== 0],
     ['未生效元素加成', S.unimbuedElemDmg,                              '%',  S.unimbuedElemDmg > 0],
+    ['全局增伤',      S.dmgPct,                                        '%',  S.dmgPct !== 0],
+    ['元素伤害修正',  S.elemDmgPct,                                    '%',  S.elemDmgPct !== 0],
     ['元素积累效率',  100 + S.elemAccum,                               '%',  S.elemAccum !== 0],
     ['对首领伤害',    S.bossDmg,                                       '%',  S.bossDmg !== 0],
     ['远程招式增伤',  S.rangedDmg,                                     '%',  S.rangedDmg !== 0],
@@ -652,6 +697,27 @@ function renderStats() {
   $('#specialBlock').style.display = sp.length ? '' : 'none';
   $('#specialList').innerHTML = sp.length ? sp.join('')
     : '<li class="empty">当前配装没有特殊机制效果</li>';
+
+  /* --- 条件加成开关 --- */
+  const condBlock = $('#condBlock');
+  if (S.condList.length) {
+    condBlock.style.display = '';
+    $('#condList').innerHTML = S.condList.map(c =>
+      `<label class="cond-item${c.on ? ' on' : ''}">
+         <input type="checkbox" data-cond="${c.key}" ${c.on ? 'checked' : ''}>
+         <span class="cond-jade">${escapeHtml(c.jade)}</span>
+         <span class="cond-label">${escapeHtml(c.label)}</span>
+         <b class="cond-val">${modsText(c.mods)}</b>
+       </label>`).join('');
+    $$('[data-cond]', condBlock).forEach(inp => inp.addEventListener('change', () => {
+      state.params.conds[inp.dataset.cond] = inp.checked;
+      save(true);
+      renderStats();          // 重渲染整块，顺带刷新开关自身的 on 样式
+    }));
+  } else {
+    condBlock.style.display = 'none';
+    $('#condList').innerHTML = '';
+  }
 }
 
 /* ---------- 参数面板 ---------- */
@@ -660,7 +726,7 @@ const PARAM_SCHEMA = [
   { key: 'element',   label: '武器输出元素',    type: 'select',
     options: [['thunder', '⚡ 雷（天雷）'], ['ice', '❄ 冰（冰爆）'], ['poison', '☠ 毒（毒爆）']] },
   { key: 'weapon',    label: '武器类型',        type: 'select',
-    options: [['melee', '近战通用'], ['cannon', '火炮'], ['zhanmadao', '斩马刀']] },
+    options: [['melee', '近战通用'], ['cannon', '火炮'], ['bow', '弓箭'], ['zhanmadao', '斩马刀']] },
   { key: 'naMul',     label: '普攻倍率 %',      type: 'number', step: 5,   min: 0 },
   { key: 'naFreq',    label: '普攻频率 次/秒',  type: 'number', step: 0.1, min: 0.1 },
   { key: 'baseCritRate', label: '基础暴击率 %', type: 'number', step: 1,   min: 0 },
@@ -671,6 +737,7 @@ const PARAM_SCHEMA = [
   { key: 'skillFreq', label: '技能频率 次/秒',  type: 'number', step: 0.05, min: 0.01 },
   { key: 'meteorMul', label: '流星倍率 %',      type: 'number', step: 10,  min: 0 },
   { key: 'meteorCd',  label: '流星冷却 秒',     type: 'number', step: 0.5, min: 0.5 },
+  { key: 'unusedPoints', label: '未使用潜能点',  type: 'number', step: 1, min: 0 },
 ];
 
 function renderParams() {
