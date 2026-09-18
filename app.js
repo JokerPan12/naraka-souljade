@@ -20,6 +20,10 @@ const elImg = (id, cls) => {
 };
 
 /* ------------------------------ 默认参数 ------------------------------ */
+/* 计算参数版本：老版本存档里的默认值会被新版默认值覆盖掉，
+   所以要在合并前先把旧默认值升级上来（见 migrateParams） */
+const PARAMS_VERSION = 2;
+
 const DEFAULT_PARAMS = {
   baseAtk: 1000,      // 基础攻击力
   element: 'thunder', // 武器输出元素（魂玉的染元素在槽位上单独选择）
@@ -40,7 +44,26 @@ const DEFAULT_PARAMS = {
   slotCount: 7,       // 配装槽位默认 7 个
   unusedPoints: 0,    // 未使用的潜能点（守缺化劲）
   conds: {},          // 条件加成开关 { '魂玉id:序号': true|false }
+  pv: PARAMS_VERSION, // 参数版本（见 migrateParams）
 };
+
+/**
+ * 参数迁移。
+ * v1 的默认值是「基础暴击率 0% / 基础暴击伤害 100%」，按游戏面板反推应为 5% / 150%。
+ * 但 load() 是 Object.assign(默认值, 存档值)，存档里的旧值会把新默认值盖掉，
+ * 所以这里显式判断：只要存档里还正好是那组旧默认值、且没打过版本号，就升级。
+ */
+function migrateParams(p) {
+  const v = parseInt(p.pv, 10) || 1;
+  let upgraded = false;
+  if (v < 2 && p.baseCritRate === 0 && p.baseCritDmg === 100) {
+    p.baseCritRate = 5;
+    p.baseCritDmg = 150;
+    upgraded = true;
+  }
+  p.pv = PARAMS_VERSION;
+  return upgraded;
+}
 /* 游戏规则：每颗魂玉固定 4 个词条槽位，普通词条与稀有词条共用这 4 格 */
 const SLOTS_PER_JADE = 4;
 const RARE_IDS = RARES.filter(r => r.id !== 'none').map(r => r.id);
@@ -801,7 +824,19 @@ function renderParams() {
       <label class="param-toggle"><input type="checkbox" data-flag="bossDmgOn" ${state.params.bossDmgOn ? 'checked' : ''}> 对首领伤害</label>
       <label class="param-toggle" style="padding-top:2px"><input type="checkbox" data-flag="rangedDmgOn" ${state.params.rangedDmgOn ? 'checked' : ''}> 远程招式增伤</label>
       <label class="param-toggle" style="padding-top:2px"><input type="checkbox" data-flag="meteorOn" ${state.params.meteorOn ? 'checked' : ''}> 流星特效估算</label>
+    </div>
+    <div class="param-cell">
+      <label>恢复</label>
+      <button type="button" class="btn" id="resetParams" title="把所有计算参数恢复为默认值">恢复默认参数</button>
     </div>`;
+
+  $('#resetParams').addEventListener('click', () => {
+    const keepSlots = state.params.slotCount;
+    Object.assign(state.params, DEFAULT_PARAMS, { slotCount: keepSlots });
+    state.params.conds = {};
+    save(true); renderParams(); syncControls(); renderAll();
+    toast('计算参数已恢复默认');
+  });
 
   $$('[data-param]', box).forEach(inp => inp.addEventListener('change', () => {
     const k = inp.dataset.param;
@@ -1186,7 +1221,11 @@ function load() {
     if (!raw) return false;
     const d = JSON.parse(raw);
     if (!d || !Array.isArray(d.slots)) return false;
-    state.params = Object.assign({}, DEFAULT_PARAMS, d.params || {});
+    const saved = Object.assign({}, d.params || {});
+    if (migrateParams(saved)) {
+      setTimeout(() => toast('已把基础暴击 0%/100% 升级为游戏实测的 5%/150%'), 900);
+    }
+    state.params = Object.assign({}, DEFAULT_PARAMS, saved);
     state.slots = d.slots;
     return true;
   } catch (e) { return false; }
@@ -1274,7 +1313,9 @@ function applyHash() {
     try {
       const d = JSON.parse(b64decode(build));
       if (!d || !Array.isArray(d.s)) return applied;
-      state.params = Object.assign({}, DEFAULT_PARAMS, d.p || {});
+      const rawP = Object.assign({}, d.p || {});
+      migrateParams(rawP);
+      state.params = Object.assign({}, DEFAULT_PARAMS, rawP);
       normalizeParams();
       state.slots = d.s.map(normalizeSlot);
       resizeSlots(state.params.slotCount);
@@ -1317,7 +1358,9 @@ function importJSON() {
         d = JSON.parse(raw);
       }
       if (!d || !Array.isArray(d.slots)) throw new Error('bad');
-      state.params = Object.assign({}, DEFAULT_PARAMS, d.params || {});
+      const rawP = Object.assign({}, d.params || {});
+      migrateParams(rawP);
+      state.params = Object.assign({}, DEFAULT_PARAMS, rawP);
       normalizeParams();
       state.slots = d.slots.map(normalizeSlot);
       resizeSlots(state.params.slotCount);
