@@ -8,7 +8,7 @@
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-const round1 = v => Math.round(v * 10) / 10;
+const round1 = v => Math.round((v + (v >= 0 ? 1e-9 : -1e-9)) * 10) / 10;   // 抵消浮点误差，如 29.9×1.5
 const pct = v => (v > 0 ? '+' : '') + round1(v) + '%';
 const num = v => (isFinite(v) ? Math.round(v).toLocaleString('en-US') : '—');
 const elColor = id => (ELEMENTS[id] || ELEMENTS.none).color;
@@ -26,8 +26,8 @@ const DEFAULT_PARAMS = {
   weapon: 'melee',    // 武器类型
   naMul: 100,         // 普攻倍率(%)
   naFreq: 1.2,        // 普攻频率(次/秒)
-  baseCritRate: 0,    // 基础暴击率(%)
-  baseCritDmg: 100,   // 基础暴击伤害加成(%)，100 表示暴击为 2 倍
+  baseCritRate: 5,    // 基础暴击率(%) —— 角色自带
+  baseCritDmg: 150,   // 基础暴击伤害加成(%) —— 角色自带，150 表示暴击为 2.5 倍
   elemMul: 150,       // 元素伤害倍率(%)
   elemFreq: 0.5,      // 元素基础触发频率(次/秒)
   skillMul: 300,      // 技能倍率(%)
@@ -57,7 +57,12 @@ let state = {
 };
 
 function emptySlot() {
-  return { jadeId: null, subs: new Array(SLOTS_PER_JADE).fill(null), element: null };
+  return {
+    jadeId: null,
+    subs: new Array(SLOTS_PER_JADE).fill(null),
+    vals: new Array(SLOTS_PER_JADE).fill(null),   // 词条实际数值，null = 用满值
+    element: null,
+  };
 }
 /** 夹紧外部来源（本地存档 / 分享链接 / 导入）的参数 */
 function normalizeParams() {
@@ -79,11 +84,15 @@ function normalizeSlot(slot) {
     subs[free >= 0 ? free : SLOTS_PER_JADE - 1] = slot.rare;
   }
   // 稀有词条不再限制数量：4 格可以全是稀有词条，也可以三条稀有各来一个
+  // 词条实际数值（可选）：null / 缺失 = 按满值计算
+  let vals = Array.isArray(slot.vals) ? slot.vals.slice(0, SLOTS_PER_JADE) : [];
+  while (vals.length < SLOTS_PER_JADE) vals.push(null);
+  vals = vals.map(v => (typeof v === 'number' && isFinite(v) && v >= 0) ? v : null);
   // 染元素：仅接受合法元素；夺魂等无法染元素的魂玉强制为 null
   const jade = JADE_BY_ID[slot.jadeId];
   let element = ELEMENT_LIST.indexOf(slot.element) >= 0 ? slot.element : null;
   if (jade.mods && jade.mods.cannotImbue) element = null;
-  return { jadeId: slot.jadeId, subs, element };
+  return { jadeId: slot.jadeId, subs, vals, element };
 }
 function resizeSlots(n) {
   const cur = state.slots;
@@ -106,7 +115,7 @@ const ADDITIVE = new Set([
   'bossDmg', 'rangedDmg', 'divineEff', 'skillDmg',
   'cdr', 'meibu', 'frostCap', 'poisonLayerNeed',
   'iceDmgMul', 'iceCdr', 'rangedSelfMul',
-  'dmgPct', 'elemDmgPct',
+  'dmgPct', 'elemDmgPct', 'yudian',
 ]);
 
 function applyMods(S, mods) {
@@ -170,22 +179,28 @@ function accumulateJade(S, slot) {
   }
 
   // ② 词条槽位：固定 4 格，普通词条与稀有词条共用，稀有词条不限制数量
-  const entries    = (slot.subs || []).slice(0, SLOTS_PER_JADE).filter(id => id && id !== 'none');
-  const hedaoCount = entries.filter(id => id === 'hedao').length;
+  const subsRaw    = (slot.subs || []).slice(0, SLOTS_PER_JADE);
+  const hedaoCount = subsRaw.filter(id => id === 'hedao').length;
   const mult       = 1 + 0.5 * hedaoCount;   // 合道可叠加：每一条合道都让该魂玉的普通词条 +50%
 
-  entries.forEach(id => {
+  subsRaw.forEach((id, si) => {
+    if (!id || id === 'none') return;
+    // 词条实际数值：存档里填过就用填的，否则用满值
+    const ov = (slot.vals || [])[si];
+    const hasOv = (typeof ov === 'number' && isFinite(ov) && ov >= 0);
+
     if (isRareId(id)) {
       const r = RARE_BY_ID[id];
+      const v = hasOv ? ov : r.value;
       if (id === 'hedao') S.hedaoCount++;
-      if (id === 'huaqi') S.cdr   += r.value;
-      if (id === 'meibu') S.meibu += r.value;
+      if (id === 'huaqi') S.cdr   += v;
+      if (id === 'meibu') S.meibu += v;
       S.rareList.push({ jade: jade.name, name: r.name });
       return;
     }
     const a = AFFIX_BY_ID[id];
     if (!a) return;
-    S[a.id] = (S[a.id] || 0) + a.value * mult;
+    S[a.id] = (S[a.id] || 0) + (hasOv ? ov : a.value) * mult;
     S.subCount++;
   });
 
@@ -199,7 +214,7 @@ function totals() {
     iceDmg: 0, thunderDmg: 0, poisonDmg: 0, elemAccum: 0,
     bossDmg: 0, rangedDmg: 0, divineEff: 0, skillDmg: 0,
     cdr: 0, meibu: 0, hedaoCount: 0, frostCap: 0, poisonLayerNeed: 0,
-    dmgPct: 0, elemDmgPct: 0,
+    dmgPct: 0, elemDmgPct: 0, yudian: 0,
     iceHits: 1, iceDmgMul: 0, iceCdr: 0,
     rangedHits: 1, rangedSelfMul: 0,
     cannotImbue: 0, meteor: 0, unimbuedElemDmg: 0,
@@ -462,6 +477,9 @@ function buildJadeCard(slot, idx) {
   const hasHedao    = hedaoCount > 0;
   const usedCnt     = subsAll.filter(Boolean).length;
 
+  const valsAll = (slot.vals || []).slice(0, SLOTS_PER_JADE);
+  while (valsAll.length < SLOTS_PER_JADE) valsAll.push(null);
+
   let subRows = '';
   for (let si = 0; si < SLOTS_PER_JADE; si++) {
     const cur = subsAll[si] || null;
@@ -478,18 +496,29 @@ function buildJadeCard(slot, idx) {
         <optgroup label="普通词条">${normalOpts}</optgroup>
         <optgroup label="稀有词条">${rareOpts}</optgroup>`;
 
-    let valHtml;
-    if (!cur) {
-      valHtml = `<span class="sub-val empty">—</span>`;
-    } else if (isRareId(cur)) {
-      valHtml = `<span class="sub-val rare rare-${cur}">${RARE_BY_ID[cur].short}</span>`;
-    } else {
-      valHtml = `<span class="sub-val ${hasHedao ? 'boosted' : ''}">${
-        pct(AFFIX_BY_ID[cur].value * hedaoMul)}${
-        hasHedao ? ` <small>合道${hedaoCount > 1 ? ` ×${hedaoCount}` : ''}</small>` : ''}</span>`;
+    let numHtml = '<span class="sub-num-ph"></span>';
+    let valHtml = '<span class="sub-val empty">—</span>';
+
+    if (cur) {
+      const isRare = isRareId(cur);
+      const maxV = isRare ? RARE_BY_ID[cur].value : AFFIX_BY_ID[cur].value;
+      const ov = valsAll[si];
+      const baseV = (typeof ov === 'number' && isFinite(ov)) ? ov : maxV;
+      const effV = isRare ? baseV : baseV * hedaoMul;
+      numHtml = `<input class="sub-num${baseV !== maxV ? ' custom' : ''}" type="number"
+                    step="0.1" min="0" value="${baseV}"
+                    data-slot="${idx}" data-sub="${si}"
+                    title="实际数值（满值 ${maxV}%）">`;
+      if (isRare) {
+        valHtml = `<span class="sub-val rare rare-${cur}">${RARE_BY_ID[cur].short}</span>`;
+      } else {
+        valHtml = `<span class="sub-val ${hasHedao ? 'boosted' : ''}">${pct(effV)}${
+          hasHedao ? ` <small>合道${hedaoCount > 1 ? ` ×${hedaoCount}` : ''}</small>` : ''}</span>`;
+      }
     }
     subRows += `<div class="sub-row${cur && isRareId(cur) ? ' has-rare' : ''}">
         <select class="sub-select" data-slot="${idx}" data-sub="${si}">${opts}</select>
+        ${numHtml}
         ${valHtml}
       </div>`;
   }
@@ -560,7 +589,19 @@ function buildJadeCard(slot, idx) {
     renderAll();
   }));
   $$('.sub-select', card).forEach(sel => sel.addEventListener('change', () => {
-    state.slots[idx].subs[+sel.dataset.sub] = sel.value || null;
+    const s = state.slots[idx];
+    const i = +sel.dataset.sub;
+    s.subs[i] = sel.value || null;
+    if (s.vals) s.vals[i] = null;      // 换词条后数值回到满值
+    save(true);
+    renderAll();
+  }));
+  $$('.sub-num', card).forEach(inp => inp.addEventListener('change', () => {
+    const s = state.slots[idx];
+    if (!s.vals) s.vals = new Array(SLOTS_PER_JADE).fill(null);
+    const i = +inp.dataset.sub;
+    const v = parseFloat(inp.value);
+    s.vals[i] = (isFinite(v) && v >= 0) ? v : null;   // 清空 = 回到满值
     save(true);
     renderAll();
   }));
@@ -572,7 +613,7 @@ const MOD_LABELS = {
   atkPct: '攻击力', critRate: '暴击率', critDmg: '暴击伤害', elemCritRate: '元素暴击率',
   iceDmg: '冰爆伤害', thunderDmg: '天雷伤害', poisonDmg: '毒爆伤害', elemAccum: '元素积累效率',
   bossDmg: '对首领伤害', rangedDmg: '远程招式增伤', divineEff: '神射值效率', skillDmg: '招式伤害',
-  cdr: '技能冷却缩减', meibu: '枚卜', dmgPct: '全局增伤', elemDmgPct: '元素伤害',
+  cdr: '技能冷却缩减', meibu: '枚卜', dmgPct: '全局增伤', elemDmgPct: '元素伤害', yudian: '御电',
 };
 const modsText = mods =>
   Object.keys(mods || {}).map(k => `${MOD_LABELS[k] || k} ${pct(mods[k])}`).join('、');
@@ -585,6 +626,7 @@ const STAT_HINTS = {
   '元素有效暴击率': '元素暴击率经过【枚卜】修正后的等效值',
   '元素积累效率': '基准 100%，越高元素爆发触发越频繁',
   '未生效元素加成': '【元素奔涌】等魂玉的加成会跟随该魂玉所染元素；未染元素则不计入',
+  '御电': '御电+1 / 颗（征神魂玉）。对怪物造成伤害时产生电击元素积累，满值后引动天雷',
   '对首领伤害': '仅在参数中勾选“计入对首领伤害”时参与计算',
   '远程招式增伤': '仅在选择【火炮】时参与普攻计算',
   '招式伤害': '影响普攻与技能，烈元诀会使其降低',
@@ -629,7 +671,8 @@ function renderStats() {
     ['未生效元素加成', S.unimbuedElemDmg,                              '%',  S.unimbuedElemDmg > 0],
     ['全局增伤',      S.dmgPct,                                        '%',  S.dmgPct !== 0],
     ['元素伤害修正',  S.elemDmgPct,                                    '%',  S.elemDmgPct !== 0],
-    ['元素积累效率',  100 + S.elemAccum,                               '%',  S.elemAccum !== 0],
+    ['元素积累效率',  S.elemAccum,                                     '%',  S.elemAccum !== 0],
+    ['御电',          S.yudian,                                        '点', S.yudian !== 0],
     ['对首领伤害',    S.bossDmg,                                       '%',  S.bossDmg !== 0],
     ['远程招式增伤',  S.rangedDmg,                                     '%',  S.rangedDmg !== 0],
     ['神射值积攒效率', S.divineEff,                                    '%',  S.divineEff !== 0],
@@ -992,7 +1035,7 @@ function snapshot() {
   return {
     params: JSON.parse(JSON.stringify(state.params)),
     slots: state.slots.map(s => s && s.jadeId
-      ? { jadeId: s.jadeId, subs: (s.subs || []).slice(), element: s.element || null }
+      ? { jadeId: s.jadeId, subs: (s.subs || []).slice(), vals: (s.vals || []).slice(), element: s.element || null }
       : null),
   };
 }
